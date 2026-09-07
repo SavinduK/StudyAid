@@ -1,0 +1,7 @@
+{
+  "name": "StudyAid",
+  "description": "A lecture-to-quiz study tool powered by the Gemini API, generating high-yield summary notes, PDFs, and adaptive quizzes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
