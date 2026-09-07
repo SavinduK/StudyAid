@@ -16,6 +16,7 @@ import com.example.data.model.QuizAttempt
 import com.example.data.repository.StudyRepository
 import com.example.service.GeminiService
 import com.example.service.PdfService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
 import kotlin.random.Random
@@ -380,6 +382,10 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 repository.insertQuestions(entities)
+                // Generate a text file for questions only (do not show it in UI)
+                try {
+                    pdfService.generateQuestionsTextFile(lessonId, effectiveTitle, entities)
+                } catch (_: Exception) {}
             }
 
             _isIngesting.value = false
@@ -512,6 +518,9 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 repository.insertQuestions(entities)
                 _activeQuestions.value = entities
+                try {
+                    pdfService.generateQuestionsTextFile(lessonId, lesson.title, entities)
+                } catch (_: Exception) {}
                 resetQuizState()
                 _successMessage.value = "Generated ${entities.size} new questions for ${lesson.title}!"
             }.onFailure { e ->
@@ -520,6 +529,45 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
 
             _isGeneratingQuestions.value = false
         }
+    }
+
+    suspend fun getOrGenerateSummaryPdf(lesson: Lesson): File? = withContext(Dispatchers.IO) {
+        val existing = if (lesson.pdfFilePath.isNotBlank()) File(lesson.pdfFilePath) else null
+        if (existing != null && existing.exists()) {
+            return@withContext existing
+        }
+
+        val keyPointsList = try {
+            val arr = JSONArray(lesson.keyPointsJson)
+            val list = mutableListOf<String>()
+            for (i in 0 until arr.length()) list.add(arr.getString(i))
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        try {
+            val file = pdfService.generateSummaryPdf(
+                lessonId = lesson.id,
+                title = lesson.title,
+                summaryMarkdown = lesson.summaryMarkdown,
+                keyPoints = keyPointsList
+            )
+            val updated = lesson.copy(pdfFilePath = file.absolutePath)
+            repository.updateLesson(updated)
+            file
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    suspend fun ensureQuestionsTextFile(lesson: Lesson) = withContext(Dispatchers.IO) {
+        try {
+            val questions = repository.getQuestionsForLessonSync(lesson.id)
+            if (questions.isNotEmpty()) {
+                pdfService.generateQuestionsTextFile(lesson.id, lesson.title, questions)
+            }
+        } catch (_: Exception) {}
     }
 
     // --- Lesson Actions ---

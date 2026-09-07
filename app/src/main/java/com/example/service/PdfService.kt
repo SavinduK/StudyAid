@@ -11,10 +11,14 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import com.example.data.model.FileAttachment
+import com.example.data.model.Question
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class PdfService(private val context: Context) {
@@ -114,23 +118,53 @@ class PdfService(private val context: Context) {
         canvas.drawText(displayTitle, marginHorizontal + 16f, currentY + 46f, titlePaint)
         currentY += 75f
 
-        // Draw Key Facts Callout Box
+        // Draw Key Facts Section - Render EVERY Important Point
         if (keyPoints.isNotEmpty()) {
-            val calloutHeight = minOf(140f, 30f + (keyPoints.take(4).size * 22f))
-            val calloutRect = RectF(marginHorizontal, currentY, marginHorizontal + contentWidth, currentY + calloutHeight)
-            canvas.drawRoundRect(calloutRect, 8f, 8f, boxPaint)
-            canvas.drawRoundRect(calloutRect, 8f, 8f, boxBorderPaint)
-
-            canvas.drawText("⚠️ High-Stakes Key Takeaways", marginHorizontal + 14f, currentY + 20f, calloutTitlePaint)
-
-            var pointY = currentY + 38f
-            for (pt in keyPoints.take(4)) {
-                val cleanPoint = pt.replace(Regex("^[-*•0-9.]+\\s*"), "").trim()
-                val wrapped = wrapText(cleanPoint, calloutBodyPaint, contentWidth - 40f)
-                canvas.drawText("•  ${wrapped.firstOrNull() ?: ""}", marginHorizontal + 16f, pointY, calloutBodyPaint)
-                pointY += 18f
+            // Check page boundary
+            if (currentY > pageHeight - marginVertical - 60f) {
+                canvas.drawText("Page $pageNumber", pageWidth - marginHorizontal - 40f, pageHeight - 20f, subtitlePaint)
+                pdfDocument.finishPage(page)
+                pageNumber++
+                pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
+                page = pdfDocument.startPage(pageInfo)
+                canvas = page.canvas
+                currentY = marginVertical
+                canvas.drawText("StudyAid — $displayTitle", marginHorizontal, currentY, subtitlePaint)
+                currentY += 24f
             }
-            currentY += calloutHeight + 18f
+
+            canvas.drawText("⚠️ HIGH-YIELD EXAM TAKEAWAYS & KEY POINTS", marginHorizontal, currentY + 12f, sectionHeaderPaint)
+            currentY += 22f
+
+            for (pt in keyPoints) {
+                val cleanPoint = pt.replace(Regex("^[-*•0-9.]+\\s*"), "").trim()
+                val wrapped = wrapText("•  $cleanPoint", calloutBodyPaint, contentWidth - 28f)
+                val blockHeight = (wrapped.size * 14f) + 10f
+
+                if (currentY + blockHeight > pageHeight - marginVertical - 30f) {
+                    canvas.drawText("Page $pageNumber", pageWidth - marginHorizontal - 40f, pageHeight - 20f, subtitlePaint)
+                    pdfDocument.finishPage(page)
+                    pageNumber++
+                    pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
+                    page = pdfDocument.startPage(pageInfo)
+                    canvas = page.canvas
+                    currentY = marginVertical
+                    canvas.drawText("StudyAid — $displayTitle", marginHorizontal, currentY, subtitlePaint)
+                    currentY += 24f
+                }
+
+                val itemRect = RectF(marginHorizontal, currentY, marginHorizontal + contentWidth, currentY + blockHeight)
+                canvas.drawRoundRect(itemRect, 6f, 6f, boxPaint)
+                canvas.drawRoundRect(itemRect, 6f, 6f, boxBorderPaint)
+
+                var textY = currentY + 12f
+                for (wLine in wrapped) {
+                    canvas.drawText(wLine, marginHorizontal + 12f, textY, calloutBodyPaint)
+                    textY += 14f
+                }
+                currentY += blockHeight + 6f
+            }
+            currentY += 10f
         }
 
         // Parse markdown lines and draw
@@ -221,6 +255,63 @@ class PdfService(private val context: Context) {
         pdfDocument.close()
 
         pdfFile
+    }
+
+    /**
+     * Generates a structured plain text file for questions and explanations.
+     * Saved locally in internal storage; not shown in the UI.
+     */
+    suspend fun generateQuestionsTextFile(
+        lessonId: Long,
+        lessonTitle: String,
+        questions: List<Question>
+    ): File = withContext(Dispatchers.IO) {
+        val questionsDir = File(context.filesDir, "questions")
+        if (!questionsDir.exists()) questionsDir.mkdirs()
+
+        val textFile = File(questionsDir, "questions_lesson_${lessonId}.txt")
+        val dateFormatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+        val dateStr = dateFormatter.format(Date())
+
+        val content = buildString {
+            appendLine("================================================================================")
+            appendLine("STUDYAID • PRACTICE QUESTIONS & EXAM RATIONALE")
+            appendLine("Lesson: $lessonTitle")
+            appendLine("Generated: $dateStr")
+            appendLine("Total Questions: ${questions.size}")
+            appendLine("================================================================================")
+            appendLine()
+
+            questions.forEachIndexed { index, q ->
+                appendLine("--------------------------------------------------------------------------------")
+                appendLine("QUESTION ${index + 1} [Type: ${q.questionType}]")
+                appendLine(q.questionText)
+                appendLine()
+
+                try {
+                    val options = JSONArray(q.optionsJson)
+                    if (options.length() > 0) {
+                        appendLine("OPTIONS:")
+                        for (i in 0 until options.length()) {
+                            appendLine("  ${options.getString(i)}")
+                        }
+                        appendLine()
+                    }
+                } catch (_: Exception) {}
+
+                appendLine("CORRECT ANSWER: ${q.correctAnswer}")
+                appendLine()
+                appendLine("EXPLANATION / RATIONALE:")
+                appendLine(q.explanation.ifBlank { "Core medical syllabus rationale." })
+                appendLine()
+            }
+            appendLine("================================================================================")
+            appendLine("END OF QUESTIONS")
+            appendLine("================================================================================")
+        }
+
+        textFile.writeText(content)
+        textFile
     }
 
     private fun wrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
