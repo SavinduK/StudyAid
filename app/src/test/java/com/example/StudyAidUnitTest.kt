@@ -41,6 +41,19 @@ class StudyAidUnitTest {
     }
 
     @Test
+    fun testBuildSummaryPromptWithAttachment() {
+        val prompt = GeminiService.buildSummaryPrompt(
+            lectureContent = "Focus on RAAS inhibitors",
+            pastPaperText = null,
+            hasLectureAttachment = true,
+            hasPastPaperAttachment = false
+        )
+        assertTrue(prompt.contains("lecture document/PDF has been uploaded as an attachment"))
+        assertTrue(prompt.contains("Focus on RAAS inhibitors"))
+        assertTrue(prompt.contains("High-Yield Exam Summary"))
+    }
+
+    @Test
     fun testAvailableModelsNotEmpty() {
         assertTrue(GeminiService.AVAILABLE_MODELS.isNotEmpty())
         assertTrue(GeminiService.AVAILABLE_MODELS.any { it.first == "gemini-3.5-flash" })

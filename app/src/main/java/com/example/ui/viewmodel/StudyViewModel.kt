@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.SettingsDataStore
 import com.example.data.local.StudyAidDatabase
 import com.example.data.model.AppSettings
+import com.example.data.model.FileAttachment
 import com.example.data.model.FlashcardItem
 import com.example.data.model.Lesson
 import com.example.data.model.Question
@@ -245,27 +246,41 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
         sourceFileName: String,
         lectureText: String,
         pastPaperText: String,
+        lectureAttachment: FileAttachment? = null,
+        pastPaperAttachment: FileAttachment? = null,
         onComplete: (Long) -> Unit
     ) {
-        if (lectureText.isBlank()) {
-            _errorMessage.value = "Please provide lecture notes or upload a valid file."
+        if (lectureAttachment == null && lectureText.isBlank()) {
+            _errorMessage.value = "Please upload a lecture file (PDF) or enter study notes."
             return
         }
 
         viewModelScope.launch {
             _isIngesting.value = true
-            _ingestionProgress.value = "Connecting to Gemini (${settings.value.selectedModel})..."
+            val effectiveSourceFileName = when {
+                lectureAttachment != null -> lectureAttachment.fileName
+                sourceFileName.isNotBlank() -> sourceFileName
+                else -> "Lecture Document"
+            }
+
+            if (lectureAttachment != null) {
+                _ingestionProgress.value = "Uploading ${lectureAttachment.fileName} to Gemini (${settings.value.selectedModel})..."
+            } else {
+                _ingestionProgress.value = "Connecting to Gemini (${settings.value.selectedModel})..."
+            }
 
             val currentKey = settings.value.apiKey
             val currentModel = settings.value.selectedModel
 
             // Step 1: Generate summary and key facts
-            _ingestionProgress.value = "Extracting high-yield concepts & exam facts..."
+            _ingestionProgress.value = "Direct model analysis: extracting high-yield concepts & exam facts..."
             val summaryResult = geminiService.generateSummary(
                 apiKey = currentKey,
                 model = currentModel,
                 lectureText = lectureText,
-                pastPaperText = pastPaperText.ifBlank { null }
+                pastPaperText = pastPaperText.ifBlank { null },
+                lectureAttachment = lectureAttachment,
+                pastPaperAttachment = pastPaperAttachment
             )
 
             summaryResult.onFailure { error ->
@@ -275,20 +290,52 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val summaryData = summaryResult.getOrThrow()
-            val effectiveTitle = if (title.isNotBlank()) title.trim() else summaryData.title
+            val effectiveTitle = if (title.isNotBlank()) {
+                title.trim()
+            } else if (summaryData.title.isNotBlank() && summaryData.title != "Lecture Summary") {
+                summaryData.title
+            } else if (lectureAttachment != null) {
+                lectureAttachment.fileName.substringBeforeLast('.').replace('_', ' ').replace('-', ' ')
+            } else {
+                summaryData.title
+            }
+
+            val effectiveLectureText = if (lectureText.isNotBlank()) {
+                lectureText
+            } else if (lectureAttachment != null) {
+                "[Direct Model Upload: ${lectureAttachment.fileName}]"
+            } else {
+                ""
+            }
+
+            val effectivePastPaperText = if (pastPaperText.isNotBlank()) {
+                pastPaperText
+            } else if (pastPaperAttachment != null) {
+                "[Direct Model Upload: ${pastPaperAttachment.fileName}]"
+            } else {
+                ""
+            }
 
             // Save lesson preliminary row to Room
             val initialLesson = Lesson(
                 title = effectiveTitle,
-                sourceFileName = sourceFileName.ifBlank { "Lecture Document" },
-                lectureText = lectureText,
-                pastPaperText = pastPaperText,
+                sourceFileName = effectiveSourceFileName,
+                lectureText = effectiveLectureText,
+                pastPaperText = effectivePastPaperText,
                 summaryMarkdown = summaryData.summaryMarkdown,
                 keyPointsJson = JSONArray(summaryData.keyPoints).toString()
             )
 
             _ingestionProgress.value = "Generating High-Yield Summary PDF..."
             val lessonId = repository.insertLesson(initialLesson)
+
+            // Save uploaded attachment locally if present
+            if (lectureAttachment != null) {
+                pdfService.saveAttachmentLocally(lectureAttachment, lessonId)
+            }
+            if (pastPaperAttachment != null) {
+                pdfService.saveAttachmentLocally(pastPaperAttachment, lessonId)
+            }
 
             // Step 2: Render & save PDF file
             val pdfFile = try {
@@ -316,7 +363,9 @@ class StudyViewModel(application: Application) : AndroidViewModel(application) {
                 lectureNotes = "${summaryData.summaryMarkdown}\n\n${summaryData.keyPoints.joinToString("\n")}",
                 pastPaperText = pastPaperText.ifBlank { null },
                 questionType = settings.value.questionType,
-                questionCount = settings.value.questionCount
+                questionCount = settings.value.questionCount,
+                lectureAttachment = lectureAttachment,
+                pastPaperAttachment = pastPaperAttachment
             )
 
             questionsResult.onSuccess { generatedList ->

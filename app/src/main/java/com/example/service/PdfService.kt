@@ -8,10 +8,14 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
+import com.example.data.model.FileAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 
 class PdfService(private val context: Context) {
 
@@ -239,6 +243,86 @@ class PdfService(private val context: Context) {
             lines.add(currentLine.toString())
         }
         return lines
+    }
+
+    /**
+     * Reads a file attachment directly from a picked URI into base64 bytes for model upload.
+     */
+     suspend fun readFileAttachmentFromUri(uri: Uri): FileAttachment? = withContext(Dispatchers.IO) {
+        try {
+            var fileName = "lecture_document.pdf"
+            var fileSize = 0L
+
+            // Extract display name and size from content provider
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst()) {
+                    if (nameIndex != -1) {
+                        fileName = cursor.getString(nameIndex) ?: fileName
+                    }
+                    if (sizeIndex != -1) {
+                        fileSize = cursor.getLong(sizeIndex)
+                    }
+                }
+            }
+
+            // Determine accurate MIME type
+            var mimeType = context.contentResolver.getType(uri) ?: ""
+            if (mimeType.isBlank() || mimeType == "application/octet-stream") {
+                val lower = fileName.lowercase()
+                mimeType = when {
+                    lower.endsWith(".pdf") -> "application/pdf"
+                    lower.endsWith(".png") -> "image/png"
+                    lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+                    lower.endsWith(".webp") -> "image/webp"
+                    lower.endsWith(".txt") -> "text/plain"
+                    lower.endsWith(".md") -> "text/markdown"
+                    else -> "application/pdf"
+                }
+            }
+
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return@withContext null
+
+            if (fileSize <= 0) {
+                fileSize = bytes.size.toLong()
+            }
+
+            val base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP)
+
+            FileAttachment(
+                fileName = fileName,
+                mimeType = mimeType,
+                base64Data = base64Data,
+                sizeBytes = fileSize
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun saveAttachmentLocally(attachment: FileAttachment, lessonId: Long): File? = withContext(Dispatchers.IO) {
+        try {
+            val uploadsDir = File(context.filesDir, "uploads")
+            if (!uploadsDir.exists()) uploadsDir.mkdirs()
+            val cleanName = attachment.fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val destFile = File(uploadsDir, "lesson_${lessonId}_$cleanName")
+            val bytes = Base64.decode(attachment.base64Data, Base64.NO_WRAP)
+            destFile.writeBytes(bytes)
+            destFile
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun formatFileSize(bytes: Long): String {
+        return when {
+            bytes >= 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f))
+            bytes >= 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024f)
+            bytes > 0 -> "$bytes B"
+            else -> ""
+        }
     }
 
     /**

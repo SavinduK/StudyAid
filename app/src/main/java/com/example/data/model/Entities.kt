@@ -63,3 +63,10 @@ data class AppSettings(
     val questionType: String = "MIXED", // "MCQ", "TRUE_FALSE", "MIXED"
     val questionCount: Int = 5 // 5 or 10
 )
+
+data class FileAttachment(
+    val fileName: String,
+    val mimeType: String,
+    val base64Data: String,
+    val sizeBytes: Long = 0L
+)

@@ -3,6 +3,7 @@ package com.example.ui.pages
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,8 +25,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -34,6 +38,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -56,6 +61,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.model.FileAttachment
 import com.example.data.model.Lesson
 import com.example.service.PdfService
 import com.example.ui.components.LessonCard
@@ -252,12 +258,14 @@ fun LessonsScreen(
     if (showAddDialog) {
         AddLessonDialog(
             onDismiss = { showAddDialog = false },
-            onSubmit = { title, fileName, lectureText, pastPaperText ->
+            onSubmit = { title, fileName, lectureText, pastPaperText, lectureAttachment, pastPaperAttachment ->
                 viewModel.ingestLesson(
                     title = title,
                     sourceFileName = fileName,
                     lectureText = lectureText,
                     pastPaperText = pastPaperText,
+                    lectureAttachment = lectureAttachment,
+                    pastPaperAttachment = pastPaperAttachment,
                     onComplete = { newLessonId ->
                         showAddDialog = false
                     }
@@ -275,28 +283,49 @@ fun LessonsScreen(
 @Composable
 fun AddLessonDialog(
     onDismiss: () -> Unit,
-    onSubmit: (String, String, String, String) -> Unit
+    onSubmit: (
+        title: String,
+        fileName: String,
+        lectureText: String,
+        pastPaperText: String,
+        lectureAttachment: FileAttachment?,
+        pastPaperAttachment: FileAttachment?
+    ) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val pdfService = remember { PdfService(context) }
 
     var title by remember { mutableStateOf("") }
-    var fileName by remember { mutableStateOf("Manual Notes Entry") }
     var lectureText by remember { mutableStateOf("") }
     var pastPaperText by remember { mutableStateOf("") }
+    var lectureAttachment by remember { mutableStateOf<FileAttachment?>(null) }
+    var pastPaperAttachment by remember { mutableStateOf<FileAttachment?>(null) }
+    var isReadingFile by remember { mutableStateOf(false) }
 
-    // File pickers
+    // File pickers targeting PDF and common document types
     val lectureFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            fileName = uri.lastPathSegment ?: "Uploaded_Lecture_File"
             coroutineScope.launch {
-                val extracted = pdfService.readTextFromUri(uri)
-                if (extracted.isNotBlank()) {
-                    lectureText = extracted
+                isReadingFile = true
+                val attachment = pdfService.readFileAttachmentFromUri(uri)
+                if (attachment != null) {
+                    lectureAttachment = attachment
+                    if (title.isBlank()) {
+                        val suggested = attachment.fileName
+                            .substringBeforeLast('.')
+                            .replace(Regex("[_\\-]+"), " ")
+                            .trim()
+                            .split(" ")
+                            .joinToString(" ") { word ->
+                                word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                            }
+                        title = suggested
+                    }
                 }
+                isReadingFile = false
             }
         }
     }
@@ -306,9 +335,9 @@ fun AddLessonDialog(
     ) { uri: Uri? ->
         if (uri != null) {
             coroutineScope.launch {
-                val extracted = pdfService.readTextFromUri(uri)
-                if (extracted.isNotBlank()) {
-                    pastPaperText = extracted
+                val attachment = pdfService.readFileAttachmentFromUri(uri)
+                if (attachment != null) {
+                    pastPaperAttachment = attachment
                 }
             }
         }
@@ -337,7 +366,7 @@ fun AddLessonDialog(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "Upload slide notes & past paper questions for Gemini to process.",
+                    text = "Upload your lecture PDF directly to Gemini without text conversion, or paste notes.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -357,48 +386,162 @@ fun AddLessonDialog(
                     shape = RoundedCornerShape(12.dp)
                 )
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
-                // Lecture Source File or Text
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Lecture Content",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
+                // Lecture Material Section
+                Text(
+                    text = "Lecture Material",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (lectureAttachment != null) {
+                    // Attached File Card
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("lecture_file_attachment_card"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(38.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.PictureAsPdf,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                Column {
+                                    Text(
+                                        text = lectureAttachment!!.fileName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = pdfService.formatFileSize(lectureAttachment!!.sizeBytes),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text("•", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(
+                                            text = "Direct Upload to Model",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { lectureAttachment = null },
+                                modifier = Modifier.testTag("remove_lecture_attachment_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Remove file",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = lectureText,
+                        onValueChange = { lectureText = it },
+                        label = { Text("Additional Focus Notes (Optional)") },
+                        placeholder = { Text("Add specific chapters, instructions, or topics to prioritize...") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 70.dp, max = 110.dp)
+                            .testTag("add_lecture_text_input"),
+                        shape = RoundedCornerShape(12.dp)
                     )
-
+                } else {
+                    // Upload button and fallback manual input
                     OutlinedButton(
                         onClick = { lectureFileLauncher.launch("*/*") },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.testTag("upload_lecture_file_button")
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("upload_lecture_file_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
                     ) {
-                        Icon(
-                            Icons.Default.FileUpload,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Pick File", style = MaterialTheme.typography.labelSmall)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PictureAsPdf,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Upload PDF / Slide Deck",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "Or paste lecture notes manually:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    OutlinedTextField(
+                        value = lectureText,
+                        onValueChange = { lectureText = it },
+                        placeholder = { Text("Paste slide content, textbook excerpts, or study notes...") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 90.dp, max = 130.dp)
+                            .testTag("add_lecture_text_input"),
+                        shape = RoundedCornerShape(12.dp)
+                    )
                 }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                OutlinedTextField(
-                    value = lectureText,
-                    onValueChange = { lectureText = it },
-                    placeholder = { Text("Paste slide content, key concepts, bullet points, or upload a document file...") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 120.dp, max = 160.dp)
-                        .testTag("add_lecture_text_input"),
-                    shape = RoundedCornerShape(12.dp)
-                )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
@@ -410,34 +553,95 @@ fun AddLessonDialog(
                 ) {
                     Column {
                         Text(
-                            text = "Past-Paper Questions",
+                            text = "Past-Paper Exam Style",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Optional exam style reference",
+                            text = "Optional exam questions or difficulty guide",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    OutlinedButton(
-                        onClick = { pastPaperFileLauncher.launch("*/*") },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.testTag("upload_past_paper_file_button")
-                    ) {
-                        Icon(
-                            Icons.Default.FileUpload,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Pick File", style = MaterialTheme.typography.labelSmall)
+                    if (pastPaperAttachment == null) {
+                        OutlinedButton(
+                            onClick = { pastPaperFileLauncher.launch("*/*") },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("upload_past_paper_file_button")
+                        ) {
+                            Icon(
+                                Icons.Default.FileUpload,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Attach File", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
+
+                if (pastPaperAttachment != null) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("past_paper_file_attachment_card"),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = pastPaperAttachment!!.fileName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = "${pdfService.formatFileSize(pastPaperAttachment!!.sizeBytes)} • Direct Model Upload",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { pastPaperAttachment = null },
+                                modifier = Modifier.testTag("remove_past_paper_attachment_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Remove file",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
 
                 OutlinedTextField(
                     value = pastPaperText,
@@ -445,7 +649,7 @@ fun AddLessonDialog(
                     placeholder = { Text("Paste past exam questions here to guide difficulty and question style...") },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 90.dp, max = 130.dp)
+                        .heightIn(min = 70.dp, max = 110.dp)
                         .testTag("add_past_paper_text_input"),
                     shape = RoundedCornerShape(12.dp)
                 )
@@ -464,13 +668,14 @@ fun AddLessonDialog(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
+                    val canSubmit = (lectureAttachment != null || lectureText.isNotBlank()) && !isReadingFile
+
                     Button(
                         onClick = {
-                            if (lectureText.isNotBlank()) {
-                                onSubmit(title, fileName, lectureText, pastPaperText)
-                            }
+                            val effectiveName = lectureAttachment?.fileName ?: "Manual Notes Entry"
+                            onSubmit(title, effectiveName, lectureText, pastPaperText, lectureAttachment, pastPaperAttachment)
                         },
-                        enabled = lectureText.isNotBlank(),
+                        enabled = canSubmit,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.testTag("submit_lesson_ingestion_button")
                     ) {

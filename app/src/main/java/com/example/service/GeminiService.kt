@@ -1,5 +1,6 @@
 package com.example.service
 
+import com.example.data.model.FileAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -42,23 +43,52 @@ class GeminiService {
         )
 
         // Centralized prompts for easy tuning
-        fun buildSummaryPrompt(lectureContent: String, pastPaperText: String? = null): String {
-            val pastPaperSection = if (!pastPaperText.isNullOrBlank()) {
+        fun buildSummaryPrompt(
+            lectureContent: String,
+            pastPaperText: String? = null,
+            hasLectureAttachment: Boolean = false,
+            hasPastPaperAttachment: Boolean = false
+        ): String {
+            val lectureIntro = if (hasLectureAttachment) {
                 """
-                
-                --- PAST-PAPER EXAM CONTEXT & EMPHASIS ---
-                $pastPaperText
-                
-                Note: Tailor the summary to emphasize high-probability topics and distinctions tested in the past paper questions above.
+                A lecture document/PDF has been uploaded as an attachment.
+                ${if (lectureContent.isNotBlank()) "Additional student notes/focus:\n$lectureContent\n" else ""}
+                Please review the entire attached document thoroughly to extract all core concepts, definitions, tables, and exam takeaways.
                 """.trimIndent()
-            } else ""
+            } else {
+                """
+                --- LECTURE CONTENT ---
+                $lectureContent
+                """.trimIndent()
+            }
+
+            val pastPaperSection = when {
+                hasPastPaperAttachment -> {
+                    """
+                    
+                    --- PAST-PAPER EXAM ATTACHMENT ---
+                    A past-paper exam reference document has also been uploaded as an attachment.
+                    ${if (!pastPaperText.isNullOrBlank()) "Additional past paper notes:\n$pastPaperText\n" else ""}
+                    Instruction: Tailor the summary to emphasize high-probability topics and distinctions tested in the attached past paper questions.
+                    """.trimIndent()
+                }
+                !pastPaperText.isNullOrBlank() -> {
+                    """
+                    
+                    --- PAST-PAPER EXAM CONTEXT & EMPHASIS ---
+                    $pastPaperText
+                    
+                    Note: Tailor the summary to emphasize high-probability topics and distinctions tested in the past paper questions above.
+                    """.trimIndent()
+                }
+                else -> ""
+            }
 
             return """
             You are StudyAid, an expert academic tutor and exam specialist.
-            Given the following lecture content, generate an exam-focused, high-yield study summary.
+            Given the provided lecture material, generate an exam-focused High-Yield Exam Summary.
 
-            --- LECTURE CONTENT ---
-            $lectureContent
+            $lectureIntro
             $pastPaperSection
 
             Please format your response strictly as valid JSON with the following schema:
@@ -82,17 +112,43 @@ class GeminiService {
             lectureNotes: String,
             pastPaperText: String? = null,
             questionType: String,
-            questionCount: Int
+            questionCount: Int,
+            hasLectureAttachment: Boolean = false,
+            hasPastPaperAttachment: Boolean = false
         ): String {
-            val pastPaperSection = if (!pastPaperText.isNullOrBlank()) {
+            val lectureIntro = if (hasLectureAttachment) {
                 """
-                
-                --- PAST-PAPER STYLE REFERENCE ---
-                $pastPaperText
-                
-                Instruction: Emulate the difficulty, question phrasing, distractor complexity, and topic focus demonstrated in the past paper.
+                A lecture document/PDF is attached. Notes and extracted summary:
+                $lectureNotes
                 """.trimIndent()
-            } else ""
+            } else {
+                """
+                --- REFERENCE NOTES ---
+                $lectureNotes
+                """.trimIndent()
+            }
+
+            val pastPaperSection = when {
+                hasPastPaperAttachment -> {
+                    """
+                    
+                    --- PAST-PAPER REFERENCE ATTACHMENT ---
+                    A past-paper exam reference document is attached.
+                    ${if (!pastPaperText.isNullOrBlank()) "Past paper notes: $pastPaperText" else ""}
+                    Instruction: Emulate the difficulty, question phrasing, distractor complexity, and topic focus demonstrated in the past paper.
+                    """.trimIndent()
+                }
+                !pastPaperText.isNullOrBlank() -> {
+                    """
+                    
+                    --- PAST-PAPER STYLE REFERENCE ---
+                    $pastPaperText
+                    
+                    Instruction: Emulate the difficulty, question phrasing, distractor complexity, and topic focus demonstrated in the past paper.
+                    """.trimIndent()
+                }
+                else -> ""
+            }
 
             val typeInstruction = when (questionType.uppercase()) {
                 "MCQ" -> "All questions must be Multiple Choice Questions (MCQ) with 4 realistic options (A, B, C, D)."
@@ -101,10 +157,9 @@ class GeminiService {
             }
 
             return """
-            You are StudyAid's quiz generator. Create exactly $questionCount high-quality exam questions based on the following lecture reference notes.
+            You are StudyAid's quiz generator. Create exactly $questionCount high-quality exam questions based on the following lecture reference notes and any attached documents.
 
-            --- REFERENCE NOTES ---
-            $lectureNotes
+            $lectureIntro
             $pastPaperSection
 
             Requirements:
@@ -138,8 +193,10 @@ class GeminiService {
     suspend fun generateSummary(
         apiKey: String,
         model: String,
-        lectureText: String,
-        pastPaperText: String? = null
+        lectureText: String = "",
+        pastPaperText: String? = null,
+        lectureAttachment: FileAttachment? = null,
+        pastPaperAttachment: FileAttachment? = null
     ): Result<GeneratedSummaryResult> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(
@@ -148,8 +205,14 @@ class GeminiService {
         }
 
         try {
-            val prompt = buildSummaryPrompt(lectureText, pastPaperText)
-            val jsonResponse = callGeminiApi(apiKey, model, prompt)
+            val attachments = listOfNotNull(lectureAttachment, pastPaperAttachment)
+            val prompt = buildSummaryPrompt(
+                lectureContent = lectureText,
+                pastPaperText = pastPaperText,
+                hasLectureAttachment = lectureAttachment != null,
+                hasPastPaperAttachment = pastPaperAttachment != null
+            )
+            val jsonResponse = callGeminiApi(apiKey, model, prompt, attachments)
             val cleanJson = extractJsonPayload(jsonResponse)
 
             val root = JSONObject(cleanJson)
@@ -176,10 +239,12 @@ class GeminiService {
     suspend fun generateQuestions(
         apiKey: String,
         model: String,
-        lectureNotes: String,
+        lectureNotes: String = "",
         pastPaperText: String? = null,
         questionType: String,
-        questionCount: Int
+        questionCount: Int,
+        lectureAttachment: FileAttachment? = null,
+        pastPaperAttachment: FileAttachment? = null
     ): Result<List<GeneratedQuestionItem>> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(
@@ -188,8 +253,16 @@ class GeminiService {
         }
 
         try {
-            val prompt = buildQuestionPrompt(lectureNotes, pastPaperText, questionType, questionCount)
-            val rawResponse = callGeminiApi(apiKey, model, prompt)
+            val attachments = listOfNotNull(lectureAttachment, pastPaperAttachment)
+            val prompt = buildQuestionPrompt(
+                lectureNotes = lectureNotes,
+                pastPaperText = pastPaperText,
+                questionType = questionType,
+                questionCount = questionCount,
+                hasLectureAttachment = lectureAttachment != null,
+                hasPastPaperAttachment = pastPaperAttachment != null
+            )
+            val rawResponse = callGeminiApi(apiKey, model, prompt, attachments)
             val cleanJson = extractJsonPayload(rawResponse)
 
             val questions = mutableListOf<GeneratedQuestionItem>()
@@ -255,7 +328,12 @@ class GeminiService {
         }
     }
 
-    private fun callGeminiApi(apiKey: String, model: String, prompt: String): String {
+    private fun callGeminiApi(
+        apiKey: String,
+        model: String,
+        prompt: String,
+        attachments: List<FileAttachment> = emptyList()
+    ): String {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$apiKey"
 
         val requestBodyJson = JSONObject().apply {
@@ -266,6 +344,20 @@ class GeminiService {
                             put("text", prompt)
                         }
                         put(partObj)
+
+                        // Attach multimodal document parts directly (PDF, images)
+                        for (att in attachments) {
+                            if (att.base64Data.isNotBlank()) {
+                                val inlineDataPart = JSONObject().apply {
+                                    val inlineDataObj = JSONObject().apply {
+                                        put("mimeType", att.mimeType)
+                                        put("data", att.base64Data)
+                                    }
+                                    put("inlineData", inlineDataObj)
+                                }
+                                put(inlineDataPart)
+                            }
+                        }
                     }
                     put("parts", partsArray)
                 }
